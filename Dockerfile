@@ -1,36 +1,39 @@
-FROM serversideup/php:8.3-fpm-nginx AS base
+FROM php:8.3-fpm-alpine
 
-# Switch to root so we can do root things
-USER root
+WORKDIR /var/www/html
 
-# Install the exif extension with root permissions
-RUN install-php-extensions exif
+# Install dependencies
+RUN apk add --no-cache \
+    bash git curl unzip zip \
+    libzip-dev oniguruma-dev \
+    build-base nodejs npm \
+    sqlite sqlite-dev
 
-# Install JavaScript dependencies
-ARG NODE_VERSION=20.18.0
-ENV PATH=/usr/local/node/bin:$PATH
-RUN curl -sL https://github.com/nodenv/node-build/archive/master.tar.gz | tar xz -C /tmp/ && \
-    /tmp/node-build-master/bin/node-build "${NODE_VERSION}" /usr/local/node && \
+# Enable Yarn v4
+RUN npm install -g corepack && \
     corepack enable && \
-    rm -rf /tmp/node-build-master
+    corepack prepare yarn@4.5.1 --activate
 
-# Drop back to our unprivileged user
-USER www-data
+# Install PHP extensions
+RUN docker-php-ext-install pdo pdo_mysql pdo_sqlite mbstring zip exif pcntl bcmath
 
-FROM base
+# Copy Composer from official image
+COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
-ENV SSL_MODE="off"
-ENV AUTORUN_ENABLED="true"
-ENV PHP_OPCACHE_ENABLE="1"
-ENV HEALTHCHECK_PATH="/up"
+# Copy Laravel source
+COPY . .
 
-# Copy the app files...
-COPY --chown=www-data:www-data . /var/www/html
+# Fix permissions
+RUN chown -R www-data:www-data /var/www/html && chmod -R 775 storage bootstrap/cache
 
-# Re-run install, but now with scripts and optimizing the autoloader (should be faster)...
-RUN composer install --no-interaction --prefer-dist --optimize-autoloader
+# Trust dir
+RUN git config --global --add safe.directory /var/www/html
 
-# Precompiling assets for production
-RUN yarn install --immutable && \
-    yarn build && \
-    rm -rf node_modules
+# Install PHP dependencies
+RUN composer install --no-interaction --prefer-dist --optimize-autoloader --ignore-platform-reqs
+
+# Build frontend
+RUN yarn install --immutable && yarn build && rm -rf node_modules
+
+EXPOSE 9000
+CMD ["php-fpm"]
